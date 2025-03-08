@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Epicycles Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; display: flex; flex-direction: column; align-items: center; background: #f4f4f4; }
+        canvas { display: block; }
+        .controls { background: white; padding: 10px; border-radius: 5px; margin-bottom: 10px; text-align: center; }
+        .plot-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 10px; }
+        .plot { width: 400px; height: 200px; border: 1px solid black; background: white; }
+        #epicycleCanvas { width: 600px; height: 600px; border: 1px solid black; background: white; }
+        .slider-grid { display: grid; grid-template-columns: repeat(9, 1fr); gap: 5px; align-items: center; text-align: center; margin-bottom: 10px; }
+        .slider-grid label { font-weight: bold; }
+        .slider-grid input { width: 100%; }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <label>Zoom: <input type="range" id="zoom-slider" min="1" max="300" value="100"></label>
+        <label>Delay: <input type="range" id="delay-slider" min="0" max="100" value="20"></label>
+        <label>Number of Epicycles: <input type="range" id="numEpicycles-slider" min="1" max="32" value="8"></label>
+        <button id="startBtn">Start</button>
+        <button id="pauseBtn">Pause</button>
+        <button id="resetBtn">Reset</button>
+    </div>
+
+    <div id="channelControls" class="slider-grid"></div>
+
+    <canvas id="epicycleCanvas"></canvas>
+    <div class="plot-container" id="plotContainer"></div>
+
+    <script>
+        let running = false;
+        let path = [];
+        let zoom = 100;
+        let delay = 20;
+        let numEpicycles = 8; // Initial number of epicycles
+        let timeIndex = 0;
+
+        const fs = 1000;
+        const T = 2;
+        const numPoints = fs * T;
+        const animationFrames = Array.from({ length: numPoints }, (_, i) => i / fs);
+
+        document.getElementById("zoom-slider").addEventListener("input", function() {
+            zoom = parseInt(this.value);
+            epicycleCtx.setTransform(zoom / 100, 0, 0, zoom / 100, epicycleCanvas.width / 2, epicycleCanvas.height / 2);
+        });
+
+        document.getElementById("delay-slider").addEventListener("input", function() {
+            delay = parseInt(this.value);
+        });
+
+        document.getElementById("numEpicycles-slider").addEventListener("input", function() {
+            numEpicycles = parseInt(this.value);
+            resetEpicycles();
+            createSliders();
+        });
+
+        document.getElementById("startBtn").addEventListener("click", function() {
+            running = true;
+            animate();
+        });
+
+        document.getElementById("pauseBtn").addEventListener("click", function() {
+            running = false;
+        });
+
+        document.getElementById("resetBtn").addEventListener("click", function() {
+            path = [];
+            timeIndex = 0;
+            running = false;
+            resetEpicycles();
+            updateVisualization();
+        });
+
+        // Create sine wave plots
+        const plotContainer = document.getElementById('plotContainer');
+        for (let i = 0; i < 32; i++) { // Max number of epicycles
+            let plotCanvas = document.createElement("canvas");
+            plotCanvas.className = "plot";
+            plotCanvas.width = 400;
+            plotCanvas.height = 200;
+            plotCanvas.id = `plot-${i}`;
+            plotContainer.appendChild(plotCanvas);
+        }
+
+        const epicycleCanvas = document.getElementById("epicycleCanvas");
+        const epicycleCtx = epicycleCanvas.getContext("2d");
+		epicycleCanvas.width = 1920;
+		epicycleCanvas.height = 1080;
+
+        // Predefined initial set of sinusoids
+        let sineParams = [
+            { freq: 5, amp: 40, phase: 0 },
+            { freq: 10, amp: 30, phase: 0 },
+            { freq: 15, amp: 25, phase: 0 },
+            { freq: 20, amp: 20, phase: 0 },
+            { freq: 25, amp: 15, phase: 0 },
+            { freq: 30, amp: 10, phase: 0 },
+            { freq: 35, amp: 8, phase: 0 },
+            { freq: 40, amp: 5, phase: 0 }
+        ];
+
+        const channelControls = document.getElementById("channelControls");
+
+        function createSliders() {
+            // Create sliders for the active number of epicycles
+            channelControls.innerHTML = `
+                <label></label>
+                ${Array.from({ length: numEpicycles }, (_, i) => `<label>Ch ${i + 1}</label>`).join("")}
+                <label>Frequency</label>
+                ${Array.from({ length: numEpicycles }, (_, i) => `
+                    <input type="range" min="1" max="50" value="${sineParams[i]?.freq || 5}" data-index="${i}" data-type="freq">
+                `).join("")}
+                <label>Amplitude</label>
+                ${Array.from({ length: numEpicycles }, (_, i) => `
+                    <input type="range" min="1" max="50" value="${sineParams[i]?.amp || 40}" data-index="${i}" data-type="amp">
+                `).join("")}
+                <label>Phase</label>
+                ${Array.from({ length: numEpicycles }, (_, i) => `
+                    <input type="range" min="-50" max="50" value="${sineParams[i]?.phase || 0}" data-index="${i}" data-type="phase">
+                `).join("")}
+            `;
+
+            // Attach event listeners to dynamically created sliders
+            document.querySelectorAll("input[type='range']").forEach(slider => {
+                slider.addEventListener("input", function() {
+                    let index = parseInt(this.dataset.index);
+                    let type = this.dataset.type;
+
+                    if (index < sineParams.length) {
+                        sineParams[index][type] = parseFloat(this.value);
+                    }
+                });
+            });
+        }
+
+        function resetEpicycles() {
+            // If numEpicycles exceeds 8, add new default sinusoids
+            if (numEpicycles > 8) {
+                const extraEpicycles = Array.from({ length: numEpicycles - 8 }, () => ({ freq: 5, amp: 40, phase: 0 }));
+                sineParams = [...sineParams, ...extraEpicycles];
+            } else {
+                // If numEpicycles is less than or equal to 8, truncate the excess sinusoids
+                sineParams = sineParams.slice(0, numEpicycles);
+            }
+
+            createSliders();
+            // Reset the plots to match the number of epicycles
+            plotContainer.innerHTML = "";
+            for (let i = 0; i < numEpicycles; i++) {
+                let plotCanvas = document.createElement("canvas");
+                plotCanvas.className = "plot";
+                plotCanvas.width = 400;
+                plotCanvas.height = 200;
+                plotCanvas.id = `plot-${i}`;
+                plotContainer.appendChild(plotCanvas);
+            }
+        }
+
+        function generateSineWaves() {
+            return sineParams.map(({ freq, amp, phase }) =>
+                animationFrames.map(t => amp * Math.sin(2 * Math.PI * freq * t + (phase * Math.PI / 180)))
+            );
+        }
+
+        function drawSinePlots(waves) {
+            waves.forEach((wave, i) => {
+                let canvas = document.getElementById(`plot-${i}`);
+                if (canvas) {
+                    let ctx = canvas.getContext("2d");
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.beginPath();
+                    wave.forEach((y, x) => {
+                        let scaledX = (x / wave.length) * canvas.width;
+                        let scaledY = canvas.height / 2 - y;
+                        if (x === 0) ctx.moveTo(scaledX, scaledY);
+                        else ctx.lineTo(scaledX, scaledY);
+                    });
+                    ctx.stroke();
+                }
+            });
+        }
+
+        function drawEpicycles(waves, index) {
+            epicycleCtx.clearRect(0, 0, epicycleCanvas.width, epicycleCanvas.height);
+
+            let x = epicycleCanvas.width / 2;
+            let y = epicycleCanvas.height / 2;
+            let prevX = x, prevY = y;
+
+            waves.forEach((wave, i) => {
+                let angle = (2 * Math.PI * sineParams[i].freq * index / numPoints) + (sineParams[i].phase * Math.PI / 180);
+                let radius = sineParams[i].amp;
+
+                epicycleCtx.beginPath();
+                epicycleCtx.arc(prevX, prevY, radius, 0, 2 * Math.PI);
+                epicycleCtx.strokeStyle = `hsl(${i * 45}, 100%, 50%)`;
+                epicycleCtx.stroke();
+
+                let newX = prevX + radius * Math.cos(angle);
+                let newY = prevY + radius * Math.sin(angle);
+
+                epicycleCtx.beginPath();
+                epicycleCtx.moveTo(prevX, prevY);
+                epicycleCtx.lineTo(newX, newY);
+                epicycleCtx.stroke();
+
+                prevX = newX;
+                prevY = newY;
+            });
+
+            path.push({ x: prevX, y: prevY });
+
+            epicycleCtx.beginPath();
+            epicycleCtx.moveTo(path[0].x, path[0].y);
+            path.forEach(p => epicycleCtx.lineTo(p.x, p.y));
+            epicycleCtx.strokeStyle = "black";
+            epicycleCtx.stroke();
+        }
+
+        function animate() {
+            if (!running) return;
+            const waves = generateSineWaves();
+            drawSinePlots(waves);
+            drawEpicycles(waves, timeIndex);
+            timeIndex = (timeIndex + 1) % numPoints;
+            setTimeout(animate, delay);
+        }
+
+        // Initialize sliders and setup
+        createSliders();
+        resetEpicycles();
+    </script>
+</body>
+</html>
